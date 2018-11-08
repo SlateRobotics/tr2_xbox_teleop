@@ -1,0 +1,8 @@
+<launch>
+  <include file="$(find tr2_hardware_interface)/launch/tr2_effort_controllers.launch" />
+  <node pkg="tr2_xbox_teleop" name="tr2_xbox_teleop_node" type="tr2_xbox_teleop.py" output="screen" />
+  <node respawn="true" pkg="joy" type="joy_node" name="tr1_joy" >
+    <param name="dev" type="string" value="/dev/input/js0" />
+    <param name="deadzone" value="0.12" />
+  </node>
+</launch>
