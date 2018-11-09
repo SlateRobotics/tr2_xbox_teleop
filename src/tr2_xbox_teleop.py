@@ -18,11 +18,8 @@ pub_JointArm4 = rospy.Publisher('/tr2/controller/effort/JointArm4/command', Floa
 pub_JointArmGripper = rospy.Publisher('/tr2/controller/effort/JointArmGripper/command', Float64, queue_size=10)
 
 # base
-pub_JointBaseWheelFL = rospy.Publisher('/tr2/controller/effort/JointBaseWheelFL/command', Float64, queue_size=10)
-pub_JointBaseWheelFR = rospy.Publisher('/tr2/controller/effort/JointBaseWheelFR/command', Float64, queue_size=10)
-pub_JointBaseWheelBL = rospy.Publisher('/tr2/controller/effort/JointBaseWheelBL/command', Float64, queue_size=10)
-pub_JointBaseWheelBR = rospy.Publisher('/tr2/controller/effort/JointBaseWheelBR/command', Float64, queue_size=10)
-pub_JointTorsoExtension = rospy.Publisher('/tr2/controller/effort/JointTorsoExtension/command', Float64, queue_size=10)
+pub_JointBaseWheelL = rospy.Publisher('/tr2/controller/effort/JointBaseWheelL/command', Float64, queue_size=10)
+pub_JointBaseWheelR = rospy.Publisher('/tr2/controller/effort/JointBaseWheelR/command', Float64, queue_size=10)
 
 # head
 pub_JointHeadTilt = rospy.Publisher('/tr2/controller/effort/JointHeadTilt/command', Float64, queue_size=10)
@@ -66,10 +63,8 @@ def zero_joints():
 	pub_JointArm3.publish(0)
 	pub_JointArm4.publish(0)
 	pub_JointArmGripper.publish(0)
-	pub_JointBaseWheelFL.publish(0)
-	pub_JointBaseWheelFR.publish(0)
-	pub_JointBaseWheelBL.publish(0)
-	pub_JointBaseWheelBR.publish(0)
+	pub_JointBaseWheelL.publish(0)
+	pub_JointBaseWheelR.publish(0)
 	pub_JointHeadPan.publish(0)
 	pub_JointHeadTilt.publish(0)
 
@@ -148,11 +143,8 @@ def subscriber_callback(data):
 		leftStick = (data.axes[0], data.axes[1])
 		rightStickX = data.axes[2]
 		motorValues = getMotorValues(np.array(leftStick), rightStickX)
-		pub_JointBaseWheelFL.publish(motorValues[0])
-		pub_JointBaseWheelFR.publish(motorValues[1] * -1)
-		pub_JointBaseWheelBL.publish(motorValues[2])
-		pub_JointBaseWheelBR.publish(motorValues[3] * -1)
-		pub_JointTorsoExtension.publish(data.axes[7])
+		pub_JointBaseWheelL.publish(motorValues[0])
+		pub_JointBaseWheelR.publish(motorValues[1] * -1)
 	elif (mode == 2):
 		pub_JointHeadPan.publish(data.axes[0])
 		pub_JointHeadTilt.publish(data.axes[1])
