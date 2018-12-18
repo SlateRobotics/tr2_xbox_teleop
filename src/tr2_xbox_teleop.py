@@ -3,217 +3,126 @@
 import time
 import rospy
 import sys
+import signal
 import numpy as np
 import math
 import datetime
+import tr2
+import tr2_utils
 from sensor_msgs.msg import Joy
 from std_msgs.msg import Float64
 
-## arm
-pub_JointArm0 = rospy.Publisher('/tr2/controller/effort/JointArm0/command', Float64, queue_size=10)
-pub_JointArm1 = rospy.Publisher('/tr2/controller/effort/JointArm1/command', Float64, queue_size=10)
-pub_JointArm2 = rospy.Publisher('/tr2/controller/effort/JointArm2/command', Float64, queue_size=10)
-pub_JointArm3 = rospy.Publisher('/tr2/controller/effort/JointArm3/command', Float64, queue_size=10)
-pub_JointArm4 = rospy.Publisher('/tr2/controller/effort/JointArm4/command', Float64, queue_size=10)
-pub_JointArmGripper = rospy.Publisher('/tr2/controller/effort/JointArmGripper/command', Float64, queue_size=10)
 
-# base
-pub_JointBaseWheelL = rospy.Publisher('/tr2/controller/effort/JointBaseWheelL/command', Float64, queue_size=10)
-pub_JointBaseWheelR = rospy.Publisher('/tr2/controller/effort/JointBaseWheelR/command', Float64, queue_size=10)
+selectedJoint = 0
+joints = [0x70, 0x10, 0x11, 0x12, 0x13, 0x14, 0x30, 0x20, 0x21]
+jointNames = ["Base", "Arm 0", "Arm 1", "Arm 2", "Arm 3", "Arm 4", "Gripper", "Head Pan", "Head Tilt"]
 
-# head
-pub_JointHeadTilt = rospy.Publisher('/tr2/controller/effort/JointHeadTilt/command', Float64, queue_size=10)
-pub_JointHeadPan = rospy.Publisher('/tr2/controller/effort/JointHeadPan/command', Float64, queue_size=10)
+mode = 0
+modes = [0x10, 0x11, 0x12]
+modeNames = ["Servo", "Backdrive", "Rotate"]
 
-mode = 0 # 0 = right arm, 1 = base
-increment = 0.05
-wristServoValue = 0.5
-gripperServoValue = 0
-wristServoLeftValue = 0.5
-gripperServoLeftValue = 0
+close = False
+tr2 = tr2.TR2()
+lastJoyUpdate = time.time()
 
-old_time = datetime.datetime.now()
-def changeMode():
-	global mode, old_time;
-	current_time = datetime.datetime.now()
-	time_diff = current_time - old_time;
-	ms_diff = (time_diff.seconds * 1000) + (time_diff.microseconds / 1000);
-	if (ms_diff < 100):
-		return;
-	if (mode == 0):
-		mode = 1
-		rospy.loginfo("Mode changed to base control")
-		old_time = datetime.datetime.now()
-		zero_joints()
-	elif (mode == 1):
-		mode = 2
-		rospy.loginfo("Mode changed to head control")
-		old_time = datetime.datetime.now()
-		zero_joints()
-	elif (mode == 2):
-		mode = 0
-		rospy.loginfo("Mode changed to arm control")
-		old_time = datetime.datetime.now()
-		zero_joints()
+def signal_handler(sig, frame):
+	global close
+	close = True
+	sys.exit(0)
+	
+signal.signal(signal.SIGINT, signal_handler)
 
-def zero_joints():
-	pub_JointArm0.publish(0)
-	pub_JointArm1.publish(0)
-	pub_JointArm2.publish(0)
-	pub_JointArm3.publish(0)
-	pub_JointArm4.publish(0)
-	pub_JointArmGripper.publish(0)
-	pub_JointBaseWheelL.publish(0)
-	pub_JointBaseWheelR.publish(0)
-	pub_JointHeadPan.publish(0)
-	pub_JointHeadTilt.publish(0)
-
-## right arm
-
-def addWristServoValue():
-	global wristServoValue, increment
-	if (wristServoValue <= 1 - increment):
-		wristServoValue = wristServoValue + increment
-
-def subWristServoValue():
-	global wristServoValue, increment
-	if (wristServoValue >= 0 + increment):
-		wristServoValue = wristServoValue - increment
-
-def addGripperServoValue():
-	global gripperServoValue, increment
-	if (gripperServoValue <= 1 - increment):
-		gripperServoValue = gripperServoValue + increment
-
-def subGripperServoValue():
-	global gripperServoValue, increment
-	if (gripperServoValue >= 0 + increment):
-		gripperServoValue = gripperServoValue - increment
-
-## left arm
-
-def addWristServoLeftValue():
-	global wristServoLeftValue, increment
-	if (wristServoLeftValue <= 1 - increment):
-		wristServoLeftValue = wristServoLeftValue + increment
-
-def subWristServoLeftValue():
-	global wristServoLeftValue, increment
-	if (wristServoLeftValue >= 0 + increment):
-		wristServoLeftValue = wristServoLeftValue - increment
-
-def addGripperServoLeftValue():
-	global gripperServoLeftValue, increment
-	if (gripperServoLeftValue <= 1 - increment):
-		gripperServoLeftValue = gripperServoLeftValue + increment
-
-def subGripperServoLeftValue():
-	global gripperServoLeftValue, increment
-	if (gripperServoLeftValue >= 0 + increment):
-		gripperServoLeftValue = gripperServoLeftValue - increment
-
+def changeJoint():
+	global selectedJoint, mode, lastJointChange;
+	maxJoint = len(joints)
+	if (selectedJoint >= maxJoint - 1):
+		selectedJoint = 0
+	else:
+		selectedJoint += 1
+	
+	name = jointNames[selectedJoint]
+	rospy.loginfo("Joint changed to " + name)
+	changeJointTS = datetime.datetime.now()
+	
+	mode = -1
+	lastJointChange = time.time()
+	
+def changeMode(m):
+	global selectedJoint, mode;
+	mode = m
+	tr2.setMode(selectedJoint, modes[m])
+	rospy.loginfo("Mode changed to " + modeNames[mode])
+	lastModeChange = time.time()
+	
 def subscriber_callback(data):
-	global mode
-	publishData = []
-
+	global mode, lastJoyUpdate
+	
+	# ignore if too soon from previous
+	timeSince = time.time() - lastJoyUpdate
+	if (timeSince * 1000 < 300):
+		return
+	else:
+		lastJoyUpdate = time.time()
+	
+	# Select/Back: change joint
 	if (data.buttons[6] == 1):
-		changeMode()
+		changeJoint()
+		
+	# Start button: Reset encoder
+	if (data.buttons[7] == 1):
+		tr2.resetEncoderPosition()
+		
+	# Both joysticks clicked in: Go joint home
+	if (data.buttons[9] == 1 and data.buttons[10] == 1): 
+		if (mode != 0): # mode servo
+			changeMode(0)
+		tr2.setPosition(selectedJoint, 0)
+	
+	# LB/RB buttons: change mode
+	if (data.buttons[4] == 1): 
+		if (mode > 0):
+			changeMode(mode - 1)
+		else:
+			changeMode(2)
+	elif (data.buttons[5] == 1):
+		if (mode < 2):
+			changeMode(mode + 1)
+		else:
+			changeMode(0)
 
-	if (mode == 0): # right arm
-		pub_JointArm0.publish(data.axes[0])
-		pub_JointArm1.publish(data.axes[1])
-		pub_JointArm2.publish(data.axes[2])
-		pub_JointArm3.publish(data.axes[3])
-		pub_JointArm4.publish(data.axes[6])
-		pub_JointArmGripper.publish(data.axes[7])
-
-		if (data.buttons[0] == 1):
-			addWristServoValue()
-
-		if (data.buttons[1] == 1):
-			subWristServoValue()
-
-		if (data.buttons[2] == 1):
-			addGripperServoValue()
-
-		if (data.buttons[3] == 1):
-			subGripperServoValue()
-
-	elif (mode == 1): # base
+	if (joints[selectedJoint] == 0x70): # base
 		leftStick = (data.axes[0], data.axes[1])
 		rightStickX = data.axes[2]
-		motorValues = getMotorValues(np.array(leftStick), rightStickX)
-		pub_JointBaseWheelL.publish(motorValues[0])
-		pub_JointBaseWheelR.publish(motorValues[1] * -1)
-	elif (mode == 2):
-		pub_JointHeadPan.publish(data.axes[0])
-		pub_JointHeadTilt.publish(data.axes[1])
+		motorValues = tr2_utils.getMotorValues(np.array(leftStick), rightStickX)
+		#pub_JointBaseWheelL.publish(motorValues[0])
+		#pub_JointBaseWheelR.publish(motorValues[1] * -1)
+	else:
+		if (mode == 0): # Servo Mode
+			if (data.axes[0] < 0.20 and data.axes[0] > -0.20):
+				return
+			pos = data.axes[0] * math.pi
+			if (pos < 0):
+				pos = pos + (math.pi * 2.0)
+			tr2.setPosition(selectedJoint, pos)
+		elif (mode == 1): # Backdrive Mode
+			return
+		elif (mode == 2): # Rotate Mode
+			tr2.actuate(selectedJoint, data.axes[0], 15000)
 
-# input: numpy array, -1 to 1 value
-def getMotorValues(desiredVector, rotationStrength):
-	if desiredVector.size == 0 and rotationStrength == 0:
-		return (0, 0, 0, 0)
+def record_pos():
+	print "to do"
 
-	desiredX = desiredVector.tolist()[0]
-	desiredY = desiredVector.tolist()[1]
-	desiredMagnitude = abs(desiredX)
-	if abs(desiredY) > desiredMagnitude:
-		desiredMagnitude = abs(desiredY)
-	if abs(rotationStrength) > desiredMagnitude:
-		desiredMagnitude = abs(rotationStrength)
-
-	if desiredMagnitude == 0:
-		return (0, 0, 0, 0)
-
-	# create rotation matrix
-	offset = math.pi / 4
-	c, s = np.cos(offset), np.sin(offset)
-	rotationMatrix = np.matrix('{} {}; {} {}'.format(c, -s, s, c))
-
-	# create output vector from rotation matrix and desiredVector
-	ouput = desiredVector.dot(rotationMatrix).tolist()[0]
-	outputX = ouput[0]
-	outputY = ouput[1]
-
-	# define motors
-	frontLeft = outputX
-	frontRight = outputY
-	backLeft = outputY
-	backRight = outputX
-
-	#manipulate values based on rotation from rotationStrength
-	rotationStrength = rotationStrength * 2
-	frontLeft = frontLeft + rotationStrength
-	frontRight = frontRight - rotationStrength
-	backLeft = backLeft + rotationStrength
-	backRight = backRight - rotationStrength
-
-	# get output magnitude
-	outputMagnitude = abs(frontRight)
-	if abs(frontLeft) > outputMagnitude:
-		outputMagnitude = abs(frontLeft)
-	if abs(backLeft) > outputMagnitude:
-		outputMagnitude = abs(backLeft)
-	if abs(backRight) > outputMagnitude:
-		outputMagnitude = abs(backRight)
-
-	# scale output to match desired magnitude
-	scale = desiredMagnitude / outputMagnitude
-
-	frontLeft = frontLeft * scale
-	frontRight = frontRight * scale
-	backLeft = backLeft * scale
-	backRight = backRight * scale
-
-	scaledOutput = (frontRight, frontLeft, backLeft, backRight)
-
-	return scaledOutput
-
-
-def do_control():
+def teleop():
+	global close
 	rospy.init_node('tr2_xbox_teleop', anonymous=True)
 	rospy.Subscriber("joy", Joy, subscriber_callback)
-	rospy.spin()
+	
+	while close != True:
+		tr2.step()
+		tr2.getState(2)
+		time.sleep(0.5)
+		
+	tr2.close()
 
 if __name__ == '__main__':
-	do_control()
+	teleop()
