@@ -59,7 +59,7 @@ def subscriber_callback(data):
 	
 	# ignore if too soon from previous
 	timeSince = time.time() - lastJoyUpdate
-	if (timeSince * 1000 < 300):
+	if (timeSince * 1000 < 200):
 		return
 	else:
 		lastJoyUpdate = time.time()
@@ -71,6 +71,23 @@ def subscriber_callback(data):
 	# Start button: Reset encoder
 	if (data.buttons[7] == 1):
 		tr2.resetEncoderPosition()
+		
+	# A button: record position
+	if (data.buttons[0] == 1):
+		play_recording()
+		
+	# B button: play positions
+	if (data.buttons[1] == 1):
+		record_pos()
+		
+	# X button: get all states
+	if (data.buttons[2] == 1):
+		record_state()
+		
+	# Y button: reset positions
+	if (data.buttons[3] == 1):
+		reset_pos()
+		reset_state()
 		
 	# Both joysticks clicked in: Go joint home
 	if (data.buttons[9] == 1 and data.buttons[10] == 1): 
@@ -108,9 +125,55 @@ def subscriber_callback(data):
 			return
 		elif (mode == 2): # Rotate Mode
 			tr2.actuate(selectedJoint, data.axes[0], 15000)
-
+			
+recordedPos = []
+lastPosRec = time.time()
 def record_pos():
-	print "to do"
+	global lastPosRec, recordedPos
+	def callback(pos, err = None):
+		global lastPosRec, recordedPos
+		if (err == None):
+			tsdif = time.time() - lastPosRec
+			recordedPos.append([pos,tsdif])
+			lastPosRec = time.time()
+			print "Added position", len(recordedPos), "-", recordedPos
+	tr2.getState(selectedJoint, callback)
+	
+def reset_pos():
+	global lastPosRec, recordedPos
+	print "Reset positions"
+	recordedPos = []
+	lastPosRec = time.time()
+	
+recordedState = [] # [[state, timestamp]]
+lastStateRec = time.time()
+def record_state():
+	global lastStateRec, recordedState
+	def callback(err = False):
+		if (err == True):
+			print "Err"
+			return
+		tsdif = time.time() - lastStateRec
+		recordedState.append([tr2.state()[0], tsdif])
+		print recordedState
+	tr2.getStateAll(callback)
+	
+def reset_state():
+	global lastStateRec, recordedState
+	print "Reset states"
+	recordedState = []
+	lastStateRec = time.time()
+	
+def play_recording():
+	print "Playing positions"
+	tr2.setMode(selectedJoint, modes[0])
+	i = 0
+	while i < len(recordedPos):
+		tr2.setPosition(selectedJoint, recordedPos[i][0])
+		if (i + 1 < len(recordedPos)):
+			time.sleep(recordedPos[i+1][1])
+		i += 1
+	print "Position playback complete"
 
 def teleop():
 	global close
@@ -119,8 +182,7 @@ def teleop():
 	
 	while close != True:
 		tr2.step()
-		tr2.getState(2)
-		time.sleep(0.5)
+		time.sleep(0.05)
 		
 	tr2.close()
 

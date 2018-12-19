@@ -76,7 +76,13 @@ class Packet:
 class Msgs:
 	_msgs = []
 	_msgId = 0
-	_arduino = serial.Serial('/dev/ttyACM0', 115200, timeout=10)
+	_expirePeriod = 10
+	_arduino = serial.Serial('/dev/ttyACM0',
+														baudrate=115200,
+														bytesize=serial.EIGHTBITS,
+														parity=serial.PARITY_NONE,
+														stopbits=serial.STOPBITS_ONE,
+														timeout=1)
 	
 	time.sleep(2)
 	
@@ -103,18 +109,17 @@ class Msgs:
 		for idx, msg in enumerate(self._msgs):
 			ts = time.time()
 			if (ts > msg.expires):
-				msg.callback()
+				msg.callback(None)
 				self.remove(msg)
 				self.clean()
 				return
 				
 	def step(self):
 		for idx, msg in enumerate(self._msgs):
-			print msg.packet.msgId
 			if (msg.sent() == False):
 				msg.packet.msgId = self._msgId
 				self.incrementMsgId()
-				msg.expires = time.time() + 5
+				msg.expires = time.time() + self._expirePeriod
 				msg.send(self._arduino)
 				
 		self.listen()
@@ -140,21 +145,17 @@ class Msgs:
 			packet.cmd = p[2]
 			
 			i = 0
-			while i < packet.length - 4:
-				packet.addParam(p[i + 4])
+			while i < packet.length - 3:
+				packet.addParam(p[i + 3])
 				i += 1
 			
 			packet.checksum = p[packet.length - 1]
 			
 			for idx, val in enumerate(self._msgs):
 				if (val.packet.msgId == packet.msgId):
-					val.callback()
-	
-			if (packet.cmd == RES_OK_POS):
-				pos = (packet.params[0] + packet.params[1] * 256.0) / 65536.0 * TAU
-				print packet.msgId, pos
-			else:
-				print packet
+					packet.i2cAddress = val.packet.i2cAddress
+					print "RES <-", packet.toString()
+					val.callback(packet)
 
 class Msg:
 	packet = Packet()
@@ -167,9 +168,9 @@ class Msg:
 		self.packet = packet
 		self._callback = callback
 		
-	def callback(self):
+	def callback(self, packet):
 		if (self._callback and self._calledback == False):
-			self._callback(self)
+			self._callback(packet)
 			self._calledback = True
 			self.expires = time.time() - 60
 		
@@ -186,5 +187,5 @@ class Msg:
 		msgString = self.packet.toString()
 		arduino.write(msgString.encode())
 		self._sent = True
-		print msgString
+		print "REQ ->", msgString
 
