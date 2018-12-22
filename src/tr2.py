@@ -36,8 +36,11 @@ TAU = math.pi * 2.0
 
 class TR2:
 	_msgs = tr2_msgs.Msgs()
+	
 	_state = []
 	_stateTS = []
+	_stateExpirePeriod = 10 # seconds
+	
 	_joints = [0x70, 0x10, 0x11, 0x12, 0x13, 0x14, 0x30, 0x20, 0x21]
 	_jointNames = ["Base", "Arm 0", "Arm 1", "Arm 2", "Arm 3", "Arm 4", "Gripper", "Head Pan", "Head Tilt"]
 
@@ -72,7 +75,22 @@ class TR2:
 		msg = tr2_msgs.Msg(self._joints[jointIdx], packet)
 		self._msgs.add(msg)
 		
-	def actuate(self, jointIdx, motorValue, motorDuration):
+	def drive(self, motorLeft, motorRight, motorDuration = 750):
+		jointIdx = 0
+		offsetBinary = 100
+			
+		packet = tr2_msgs.Packet()
+		packet.i2cAddress = self._joints[jointIdx]
+		packet.cmd = CMD_ROTATE
+		packet.addParam(int((motorLeft * 100.0) + offsetBinary))
+		packet.addParam(int((motorRight * 100.0) + offsetBinary))
+		packet.addParam(int(math.floor(motorDuration % 256)))
+		packet.addParam(int(math.floor(motorDuration / 256)))
+		
+		msg = tr2_msgs.Msg(self._joints[jointIdx], packet)
+		self._msgs.add(msg)
+		
+	def actuate(self, jointIdx, motorValue, motorDuration = 750):
 		offsetBinary = 128
 		x = int(math.floor(motorValue * 100.0))
 			
@@ -107,15 +125,15 @@ class TR2:
 		if (self._grabbingState == True):
 			return callback(err = True)
 	
-		i = 2
+		i = 1
 		self._cbs = 0
 		self._grabbingState = True
-		while i < 5:#len(self._joints):
+		while i < 6:#len(self._joints):
 			def cb(pos, err = None, idx = i):
 				self._cbs += 1
 				self._state[idx] = pos
 				self._stateTS[idx] = time.time()
-				if (self._cbs >= 3):
+				if (self._cbs >= 5):
 					self._grabbingState = False
 					callback()
 			self.getState(i, cb)
@@ -140,11 +158,21 @@ class TR2:
     
 	def step(self):
 		self._msgs.step()
+		
+		# expire any state measurements outside of expire period
+		for idx, val in enumerate(self._state):
+			tsdif = time.time() - self._stateTS[idx]
+			if (tsdif > self._stateExpirePeriod):
+				self._state[idx] = None
+				self._stateTS[idx] = time.time()
+		
   	
-	def spin(self):
-		while True:
+	def spin(self, condition = True):
+		print "TR2 Ready"
+		while condition == True:
 			self.step()
 			time.sleep(0.1)
+		self.close()
 			
 	def close(self):
 		self._arduino.close()

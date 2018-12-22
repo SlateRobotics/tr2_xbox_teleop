@@ -184,8 +184,15 @@ class Msg:
 		if (arduino.isOpen() == False):
 			arduino.open()
 			
-		msgString = self.packet.toString()
-		arduino.write(msgString.encode())
+		msgString = self.packet.toString().encode()
+		
+		# write char-by-char with delay to give arduino
+		# enough time to read & clear its 64-bit serial buffer
+		for c in msgString:
+			arduino.write(c)
+			time.sleep(0.005)
+			
+		#arduino.write(msgString.encode())
 		self._sent = True
 		print "REQ ->", msgString
 

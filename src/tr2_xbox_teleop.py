@@ -25,6 +25,8 @@ close = False
 tr2 = tr2.TR2()
 lastJoyUpdate = time.time()
 
+joy_data = None
+
 def signal_handler(sig, frame):
 	global close
 	close = True
@@ -55,14 +57,16 @@ def changeMode(m):
 	lastModeChange = time.time()
 	
 def subscriber_callback(data):
-	global mode, lastJoyUpdate
+	global joy_data
+	joy_data = data	
 	
-	# ignore if too soon from previous
-	timeSince = time.time() - lastJoyUpdate
-	if (timeSince * 1000 < 200):
+def teleop():
+	global mode, joy_data
+	
+	if (joy_data == None):
 		return
-	else:
-		lastJoyUpdate = time.time()
+		
+	data = joy_data
 	
 	# Select/Back: change joint
 	if (data.buttons[6] == 1):
@@ -74,7 +78,7 @@ def subscriber_callback(data):
 		
 	# A button: record position
 	if (data.buttons[0] == 1):
-		play_recording()
+		plan_recording_all()
 		
 	# B button: play positions
 	if (data.buttons[1] == 1):
@@ -108,11 +112,13 @@ def subscriber_callback(data):
 			changeMode(0)
 
 	if (joints[selectedJoint] == 0x70): # base
-		leftStick = (data.axes[0], data.axes[1])
-		rightStickX = data.axes[2]
-		motorValues = tr2_utils.getMotorValues(np.array(leftStick), rightStickX)
-		#pub_JointBaseWheelL.publish(motorValues[0])
-		#pub_JointBaseWheelR.publish(motorValues[1] * -1)
+		y = data.axes[1]
+		rotation = data.axes[2]
+		if (abs(data.axes[0]) > abs(rotation)):
+			rotation = data.axes[0]
+		motorValues = tr2_utils.getMotorValues(y, rotation)
+		print motorValues
+		tr2.drive(motorValues[0], motorValues[1])
 	else:
 		if (mode == 0): # Servo Mode
 			if (data.axes[0] < 0.20 and data.axes[0] > -0.20):
@@ -124,7 +130,7 @@ def subscriber_callback(data):
 		elif (mode == 1): # Backdrive Mode
 			return
 		elif (mode == 2): # Rotate Mode
-			tr2.actuate(selectedJoint, data.axes[0], 15000)
+			tr2.actuate(selectedJoint, data.axes[0])
 			
 recordedPos = []
 lastPosRec = time.time()
@@ -153,8 +159,9 @@ def record_state():
 		if (err == True):
 			print "Err"
 			return
+		state = list(tr2.state()[0])
 		tsdif = time.time() - lastStateRec
-		recordedState.append([tr2.state()[0], tsdif])
+		recordedState.append([state, tsdif / 3.0])
 		print recordedState
 	tr2.getStateAll(callback)
 	
@@ -164,7 +171,25 @@ def reset_state():
 	recordedState = []
 	lastStateRec = time.time()
 	
-def play_recording():
+def plan_recording_all():
+	print "Playing positions"
+	print recordedState
+	for idx, val in enumerate(recordedState):
+		state = val[0]
+		period = 0
+		if (idx + 1 < len(recordedState)):
+			period = recordedState[idx + 1][1]
+		print "Playing state",idx
+		for jointIdx, pos in enumerate(state):
+			print "Joint index", jointIdx, "->", pos
+			if (pos != None):
+				tr2.setMode(jointIdx, modes[0])
+				tr2.setPosition(jointIdx, pos)
+		print "Sleeping for", period, "seconds"
+		time.sleep(period)
+	print "Position playback complete"
+	
+def play_recording_single():
 	print "Playing positions"
 	tr2.setMode(selectedJoint, modes[0])
 	i = 0
@@ -175,16 +200,15 @@ def play_recording():
 		i += 1
 	print "Position playback complete"
 
-def teleop():
+def program():
 	global close
 	rospy.init_node('tr2_xbox_teleop', anonymous=True)
 	rospy.Subscriber("joy", Joy, subscriber_callback)
 	
 	while close != True:
+		teleop()
 		tr2.step()
-		time.sleep(0.05)
-		
-	tr2.close()
+		time.sleep(0.250)
 
 if __name__ == '__main__':
-	teleop()
+	program()
