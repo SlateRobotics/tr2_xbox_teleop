@@ -19,8 +19,6 @@ def getMotorValues(y, rotationStrength):
 		
 	if (desiredMagnitude == 0):
 		return 0, 0
-		
-	print y, rotationStrength
 
 	# define motors
 	left = y

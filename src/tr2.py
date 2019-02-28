@@ -22,7 +22,8 @@ CMD_SET_POS = 0x11
 CMD_RESET_POS = 0x12
 CMD_ROTATE = 0x13
 CMD_RETURN_STATUS = 0x14
-CMD_SET_FREQUENCY = 0x15
+CMD_STOP = 0x15
+CMD_STOP_EMERGENCY = 0x16
 
 ERR_NONE = 0x00
 ERR_CHECKSUM = 0x01
@@ -46,6 +47,12 @@ class TR2:
 
 	_cbs = 0
 	_grabbingState = False
+	_stopping = False
+	
+	_minMotorValue = 0.20
+	_lastCmdActuate = 0
+	_lastCmdDriveLeft = 0
+	_lastCmdDriveRight = 0
 
 	def __init__(self):
 		i = 0
@@ -53,6 +60,7 @@ class TR2:
 			self._state.append(None)
 			self._stateTS.append(time.time())
 			i += 1
+		print "TR2 Ready"
 			
 	def state(self):
 		return self._state, self._stateTS
@@ -63,7 +71,7 @@ class TR2:
 	def getJointNames(self):
 		return self._jointNames
 		
-	def setPosition(self, jointIdx, pos):			
+	def setPosition(self, jointIdx, pos):
 		x = pos / (math.pi * 2) * 65535
 	
 		packet = tr2_msgs.Packet()
@@ -76,6 +84,14 @@ class TR2:
 		self._msgs.add(msg)
 		
 	def drive(self, motorLeft, motorRight, motorDuration = 750):
+		if (abs(motorLeft) <= self._minMotorValue and abs(motorRight) <= self._minMotorValue and abs(self._lastCmdDriveLeft) <= self._minMotorValue and abs(self._lastCmdDriveRight) <= self._minMotorValue):
+			self._lastCmdDriveLeft = motorLeft
+			self._lastCmdDriveRight = motorRight
+			return
+		
+		self._lastCmdDriveLeft = motorLeft
+		self._lastCmdDriveRight = motorRight
+	
 		jointIdx = 0
 		offsetBinary = 100
 			
@@ -90,7 +106,37 @@ class TR2:
 		msg = tr2_msgs.Msg(self._joints[jointIdx], packet)
 		self._msgs.add(msg)
 		
+	def stopAll(self, emergency = False):
+		i = 5
+		while i >= 1:#len(self._joints):
+			self.stop(i, emergency)
+			self.step()
+			time.sleep(0.250)
+			i -= 1
+		
+	def stop(self, jointIdx = -1, emergency = False):
+		if (jointIdx == -1):
+			self.stopAll()
+			
+		cmd = CMD_STOP
+		if (emergency == True):
+			cmd = CMD_STOP_EMERGENCY
+		
+		packet = tr2_msgs.Packet()
+		packet.i2cAddress = self._joints[jointIdx]
+		packet.cmd = cmd
+		
+		msg = tr2_msgs.Msg(self._joints[jointIdx], packet)
+		msg.retryOnFailure = True
+		self._msgs.add(msg)
+		
 	def actuate(self, jointIdx, motorValue, motorDuration = 750):
+		if (abs(motorValue) <= self._minMotorValue and abs(self._lastCmdActuate) <= self._minMotorValue):
+			self._lastCmdActuate = motorValue
+			return
+			
+		self._lastCmdActuate = motorValue
+			
 		offsetBinary = 128
 		x = int(math.floor(motorValue * 100.0))
 			
@@ -110,7 +156,16 @@ class TR2:
 		packet.cmd = CMD_RESET_POS
 		
 		msg = tr2_msgs.Msg(self._joints[jointIdx], packet)
+		msg.retryOnFailure = True
 		self._msgs.add(msg)
+		
+	def setModeAll(self, mode):
+		i = 5
+		while i >= 1:#len(self._joints):
+			self.setMode(i, mode)
+			self.step()
+			time.sleep(0.250)
+			i -= 1
 		
 	def setMode(self, jointIdx, mode):
 		packet = tr2_msgs.Packet()
@@ -119,25 +174,29 @@ class TR2:
 		packet.addParam(mode)
 		
 		msg = tr2_msgs.Msg(self._joints[jointIdx], packet)
+		msg.retryOnFailure = True
 		self._msgs.add(msg)
 		
 	def getStateAll(self, callback = None):
 		if (self._grabbingState == True):
 			return callback(err = True)
 	
-		i = 1
+		i = 5
 		self._cbs = 0
 		self._grabbingState = True
-		while i < 6:#len(self._joints):
+		while i >= 1:#len(self._joints):
 			def cb(pos, err = None, idx = i):
+				if pos != None:
+					self._state[idx] = pos
+					self._stateTS[idx] = time.time()
 				self._cbs += 1
-				self._state[idx] = pos
-				self._stateTS[idx] = time.time()
 				if (self._cbs >= 5):
 					self._grabbingState = False
 					callback()
 			self.getState(i, cb)
-			i += 1
+			self.step()
+			time.sleep(0.050)
+			i -= 1
 		
 	def getState(self, jointIdx, cb):
 		packet = tr2_msgs.Packet()
@@ -154,6 +213,7 @@ class TR2:
 				cb(None, ERR_OTHER)
 		
 		msg = tr2_msgs.Msg(self._joints[jointIdx], packet, callback)
+		msg.retryOnFailure = True
 		self._msgs.add(msg)
     
 	def step(self):

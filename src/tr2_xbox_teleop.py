@@ -9,9 +9,9 @@ import math
 import datetime
 import tr2
 import tr2_utils
+import tr2_tasks
 from sensor_msgs.msg import Joy
 from std_msgs.msg import Float64
-
 
 selectedJoint = 0
 joints = [0x70, 0x10, 0x11, 0x12, 0x13, 0x14, 0x30, 0x20, 0x21]
@@ -26,6 +26,17 @@ tr2 = tr2.TR2()
 lastJoyUpdate = time.time()
 
 joy_data = None
+
+recordedState = [] # [[state, timestamp]]
+lastStateRec = time.time()
+
+recordedPos = []
+lastPosRec = time.time()
+
+rpm = 3.75
+recordedState = []
+recordedState = tr2_tasks.pickAndPlaceSingle
+recordedState = tr2_tasks.keurigOperator
 
 def signal_handler(sig, frame):
 	global close
@@ -58,8 +69,12 @@ def changeMode(m):
 	
 def subscriber_callback(data):
 	global joy_data
-	joy_data = data	
+	joy_data = data
 	
+	# XBOX-Button: emergency stop
+	if (data.buttons[8] == 1):
+		tr2.stopAll(emergency = True)
+		
 def teleop():
 	global mode, joy_data
 	
@@ -68,26 +83,38 @@ def teleop():
 		
 	data = joy_data
 	
+	# XBOX-Button: emergency stop
+	if (data.buttons[8] == 1):
+		tr2.stopAll(emergency = True)
+	
+	# Left trigger: set all joints backdrive
+	if (data.axes[5] < 0):
+		tr2.setModeAll(modes[1])
+
+	# Right trigger: stop all
+	if (data.axes[4] < 0):
+		tr2.stopAll()
+	
+	# B button: stop
+	if (data.buttons[1] == 1):
+		tr2.stop(selectedJoint)
+
 	# Select/Back: change joint
 	if (data.buttons[6] == 1):
 		changeJoint()
-		
+	
 	# Start button: Reset encoder
 	if (data.buttons[7] == 1):
-		tr2.resetEncoderPosition()
-		
+		tr2.resetEncoderPosition(selectedJoint)
+	
 	# A button: record position
 	if (data.buttons[0] == 1):
 		plan_recording_all()
-		
-	# B button: play positions
-	if (data.buttons[1] == 1):
-		record_pos()
-		
+	
 	# X button: get all states
 	if (data.buttons[2] == 1):
 		record_state()
-		
+	
 	# Y button: reset positions
 	if (data.buttons[3] == 1):
 		reset_pos()
@@ -117,7 +144,6 @@ def teleop():
 		if (abs(data.axes[0]) > abs(rotation)):
 			rotation = data.axes[0]
 		motorValues = tr2_utils.getMotorValues(y, rotation)
-		print motorValues
 		tr2.drive(motorValues[0], motorValues[1])
 	else:
 		if (mode == 0): # Servo Mode
@@ -132,8 +158,6 @@ def teleop():
 		elif (mode == 2): # Rotate Mode
 			tr2.actuate(selectedJoint, data.axes[0])
 			
-recordedPos = []
-lastPosRec = time.time()
 def record_pos():
 	global lastPosRec, recordedPos
 	def callback(pos, err = None):
@@ -151,17 +175,18 @@ def reset_pos():
 	recordedPos = []
 	lastPosRec = time.time()
 	
-recordedState = [] # [[state, timestamp]]
-lastStateRec = time.time()
 def record_state():
 	global lastStateRec, recordedState
 	def callback(err = False):
+		global lastStateRec, recordedState
 		if (err == True):
 			print "Err"
 			return
 		state = list(tr2.state()[0])
 		tsdif = time.time() - lastStateRec
-		recordedState.append([state, tsdif / 3.0])
+		coef = 1 / 1;
+		recordedState.append([state, tsdif * coef])
+		lastStateRec = time.time()
 		print recordedState
 	tr2.getStateAll(callback)
 	
@@ -174,19 +199,40 @@ def reset_state():
 def plan_recording_all():
 	print "Playing positions"
 	print recordedState
+	
+	print "Setting joints to servo mode"
+	i = 1
+	while i < 6:
+		tr2.setMode(i, modes[0])
+		tr2.step()
+		time.sleep(0.050)
+		i += 1
+	
 	for idx, val in enumerate(recordedState):
 		state = val[0]
 		period = 0
 		if (idx + 1 < len(recordedState)):
 			period = recordedState[idx + 1][1]
 		print "Playing state",idx
+		'''
+		duration = 0
 		for jointIdx, pos in enumerate(state):
-			print "Joint index", jointIdx, "->", pos
+			prevPos = 0
+			if idx > 
+			
+			'''
+		for jointIdx, pos in enumerate(state):
+			#print "Joint index", jointIdx, "->", pos
 			if (pos != None):
-				tr2.setMode(jointIdx, modes[0])
 				tr2.setPosition(jointIdx, pos)
+				tr2.step()
+				time.sleep(0.050)
+				
 		print "Sleeping for", period, "seconds"
-		time.sleep(period)
+		sleepTill = time.time() + period
+		while sleepTill > time.time():
+			tr2.step()
+			time.sleep(0.050)
 	print "Position playback complete"
 	
 def play_recording_single():
@@ -207,8 +253,15 @@ def program():
 	
 	while close != True:
 		teleop()
+		'''def callback(err = False):
+			global lastStateRec, recordedState
+			if (err == True):
+				print "Err"
+				return
+			print tr2.state()
+		tr2.getStateAll(callback)'''
 		tr2.step()
-		time.sleep(0.250)
+		time.sleep(0.150)
 
 if __name__ == '__main__':
 	program()

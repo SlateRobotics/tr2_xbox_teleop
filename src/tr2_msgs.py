@@ -22,7 +22,8 @@ CMD_SET_POS = 0x11
 CMD_RESET_POS = 0x12
 CMD_ROTATE = 0x13
 CMD_RETURN_STATUS = 0x14
-CMD_SET_FREQUENCY = 0x15
+CMD_STOP = 0x15
+CMD_STOP_EMERGENCY = 0x16
 
 TAU = math.pi * 2.0
 
@@ -33,6 +34,8 @@ class Packet:
 	length = 0
 	params = []
 	checksum = 0
+	
+	_startByte = 0xFF
 	
 	def __init__(self, addr = 0x00):
 		self.i2cAddress = addr
@@ -55,6 +58,18 @@ class Packet:
     
 	def computeLength(self):
 		self.length = 4 + len(self.params)
+		
+	def toList(self):
+		self.computeLength()
+		self.computeChecksum()
+		
+		result = [self._startByte, self.i2cAddress, self.msgId, self.length, self.cmd]
+		
+		for p in self.params:
+			result.append(p)
+		
+		result.append(self.checksum)
+		return result
     
 	def toString(self):
 		self.computeLength()
@@ -68,7 +83,7 @@ class Packet:
   	
 		for p in self.params:
 			msgString = msgString + str(p) + " "
-  	
+			
 		msgString = msgString + str(self.checksum) + " "
 		return msgString + ";"
   
@@ -76,13 +91,13 @@ class Packet:
 class Msgs:
 	_msgs = []
 	_msgId = 0
-	_expirePeriod = 10
+	_expirePeriod = 0.250
 	_arduino = serial.Serial('/dev/ttyACM0',
-														baudrate=115200,
-														bytesize=serial.EIGHTBITS,
-														parity=serial.PARITY_NONE,
-														stopbits=serial.STOPBITS_ONE,
-														timeout=1)
+														baudrate = 115200,
+														bytesize = 8,
+														parity = serial.PARITY_NONE,
+														stopbits = serial.STOPBITS_ONE,
+														timeout = 1)
 	
 	time.sleep(2)
 	
@@ -114,15 +129,26 @@ class Msgs:
 				self.clean()
 				return
 				
+	def retryPending(self):
+		timeThreshold = 3 # seconds
+		for idx, msg in enumerate(self._msgs):
+			ts = time.time()
+			if (ts < msg.expires and msg._calledback == False):
+				if (msg._sentOn > time.time() - timeThreshold):
+					msg._sent = False
+				
 	def step(self):
+		self.listen()
+		
 		for idx, msg in enumerate(self._msgs):
 			if (msg.sent() == False):
 				msg.packet.msgId = self._msgId
 				self.incrementMsgId()
-				msg.expires = time.time() + self._expirePeriod
+				msg.send(self._arduino)
+			elif (msg.sent() == True and time.time() > msg.expires and msg._responseReceived == False and msg._attempt < 10 and msg.retryOnFailure == True):
+				msg._sent = False
 				msg.send(self._arduino)
 				
-		self.listen()
 		self.clean()
 				
 	def listen(self):
@@ -130,45 +156,69 @@ class Msgs:
 			if (self._arduino.isOpen() == False):
 				self._arduino.open()
 			
-			p = self._arduino.read_until(";",32)
-			p = p.split(" ")
+			p_str = self._arduino.read_until(";",256)
+			p = p_str.split(" ")
+			
+			if (p[0] == "READY"):
+				self.retryPending()
+				print "S2I restart. Retrying unconfirmed messages"
+				return
+			elif (p[0] == "INFO:"):
+				print p_str
+				return
 	
 			for idx, val in enumerate(p):
 				try:
 					p[idx] = int(val)
 				except:
 					p[idx] = val
-				
+			
 			packet = Packet()
-			packet.msgId = p[0]
-			packet.length = p[1]
-			packet.cmd = p[2]
+			if len(p) >= 3:
+				packet.msgId = p[0]
+				packet.length = p[1]
+				packet.cmd = p[2]
 			
 			i = 0
-			while i < packet.length - 3:
-				packet.addParam(p[i + 3])
+			while i < packet.length - 4:
+				if i + 3 <= len(p) - 1:
+					packet.addParam(p[i + 3])
 				i += 1
 			
-			packet.checksum = p[packet.length - 1]
+			if packet.length - 1 <= len(p) - 1:
+				packet.checksum = p[packet.length - 1]
 			
+			msgFound = False
 			for idx, val in enumerate(self._msgs):
 				if (val.packet.msgId == packet.msgId):
+					msgFound = True
 					packet.i2cAddress = val.packet.i2cAddress
 					print "RES <-", packet.toString()
 					val.callback(packet)
+					
+			if msgFound == False:
+				print "INFO (", len(p_str), "):", p_str
 
 class Msg:
 	packet = Packet()
 	expires = time.time() + 60
+	retryOnFailure = False
+	_attempt = 0
 	_sent = False
+	_sentOn = None
 	_callback = None
 	_calledback = False
+	_expirePeriod = 0.500
+	_responseReceived = False
 	
 	def __init__(self, addr, packet, callback = None):
 		self.packet = packet
 		self._callback = callback
 		
 	def callback(self, packet):
+		if (packet != None):
+			self._responseReceived = True
+				
 		if (self._callback and self._calledback == False):
 			self._callback(packet)
 			self._calledback = True
@@ -178,11 +228,18 @@ class Msg:
 		return self._sent
     
 	def send(self, arduino):
+		self._attempt += 1;
+		
 		if (self._sent == True):
 			return
 			
 		if (arduino.isOpen() == False):
 			arduino.open()
+			
+		#packetList = self.packet.toList()
+		#packetList.append("\n")
+		#arduino.write(bytearray(packetList))
+		#time.sleep(0.005)
 			
 		msgString = self.packet.toString().encode()
 		
@@ -190,9 +247,10 @@ class Msg:
 		# enough time to read & clear its 64-bit serial buffer
 		for c in msgString:
 			arduino.write(c)
-			time.sleep(0.005)
+			time.sleep(0.001)
 			
-		#arduino.write(msgString.encode())
 		self._sent = True
+		self._sentOn = time.time()
+		self.expires = time.time() + self._expirePeriod
 		print "REQ ->", msgString
 
