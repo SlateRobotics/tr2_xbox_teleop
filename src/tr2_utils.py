@@ -25,7 +25,7 @@ def getMotorValues(y, rotationStrength):
 	right = y
 	
 	#manipulate values based on rotation from rotationStrength
-	rotationStrength = rotationStrength * 2
+	#rotationStrength = rotationStrength * 3
 	left = left + rotationStrength
 	right = right - rotationStrength
 

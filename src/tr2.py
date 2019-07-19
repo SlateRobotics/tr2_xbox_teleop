@@ -22,7 +22,7 @@ CMD_SET_POS = 0x11
 CMD_RESET_POS = 0x12
 CMD_ROTATE = 0x13
 CMD_RETURN_STATUS = 0x14
-CMD_STOP = 0x15
+CMD_STOP_RELEASE = 0x15
 CMD_STOP_EMERGENCY = 0x16
 
 ERR_NONE = 0x00
@@ -42,7 +42,7 @@ class TR2:
 	_stateTS = []
 	_stateExpirePeriod = 10 # seconds
 	
-	_joints = [0x70, 0x10, 0x11, 0x12, 0x13, 0x14, 0x30, 0x20, 0x21]
+	_joints = ["b0", "a0", "a1", "a2", "a3", "a4", "g0", "h0", "h1"]
 	_jointNames = ["Base", "Arm 0", "Arm 1", "Arm 2", "Arm 3", "Arm 4", "Gripper", "Head Pan", "Head Tilt"]
 
 	_cbs = 0
@@ -63,7 +63,7 @@ class TR2:
 		print "TR2 Ready"
 			
 	def state(self):
-		return self._state, self._stateTS
+		return self._msgs.getState()
     
 	def getJoints(self):
 		return self._joints
@@ -71,14 +71,15 @@ class TR2:
 	def getJointNames(self):
 		return self._jointNames
 		
-	def setPosition(self, jointIdx, pos):
+	def setPosition(self, jointIdx, pos, speed = 100):
 		x = pos / (math.pi * 2) * 65535
 	
 		packet = tr2_msgs.Packet()
-		packet.i2cAddress = self._joints[jointIdx]
+		packet.address = self._joints[jointIdx]
 		packet.cmd = CMD_SET_POS
 		packet.addParam(int(math.floor(x % 256)))
 		packet.addParam(int(math.floor(x / 256)))
+		packet.addParam(int(math.floor(speed / 100.0 * 255.0)))
 		
 		msg = tr2_msgs.Msg(self._joints[jointIdx], packet)
 		self._msgs.add(msg)
@@ -96,7 +97,7 @@ class TR2:
 		offsetBinary = 100
 			
 		packet = tr2_msgs.Packet()
-		packet.i2cAddress = self._joints[jointIdx]
+		packet.address = self._joints[jointIdx]
 		packet.cmd = CMD_ROTATE
 		packet.addParam(int((motorLeft * 100.0) + offsetBinary))
 		packet.addParam(int((motorRight * 100.0) + offsetBinary))
@@ -105,32 +106,52 @@ class TR2:
 		
 		msg = tr2_msgs.Msg(self._joints[jointIdx], packet)
 		self._msgs.add(msg)
-		
-	def stopAll(self, emergency = False):
-		i = 5
+
+	def releaseAll(self):
+		i = 8
 		while i >= 1:#len(self._joints):
-			self.stop(i, emergency)
+			self.release(i)
 			self.step()
-			time.sleep(0.250)
+			time.sleep(0.020)
 			i -= 1
 		
-	def stop(self, jointIdx = -1, emergency = False):
+	def stopAll(self):
+		i = 8
+		while i >= 1:#len(self._joints):
+			self.stop(i)
+			self.step()
+			time.sleep(0.020)
+			i -= 1
+
+	def release(self, jointIdx = -1):
 		if (jointIdx == -1):
-			self.stopAll()
+			self.releaseAll()
 			
-		cmd = CMD_STOP
-		if (emergency == True):
-			cmd = CMD_STOP_EMERGENCY
+		cmd = CMD_STOP_RELEASE
 		
 		packet = tr2_msgs.Packet()
-		packet.i2cAddress = self._joints[jointIdx]
+		packet.address = self._joints[jointIdx]
 		packet.cmd = cmd
 		
 		msg = tr2_msgs.Msg(self._joints[jointIdx], packet)
 		msg.retryOnFailure = True
 		self._msgs.add(msg)
 		
-	def actuate(self, jointIdx, motorValue, motorDuration = 750):
+	def stop(self, jointIdx = -1):
+		if (jointIdx == -1):
+			self.stopAll()
+			
+		cmd = CMD_STOP_EMERGENCY
+		
+		packet = tr2_msgs.Packet()
+		packet.address = self._joints[jointIdx]
+		packet.cmd = cmd
+		
+		msg = tr2_msgs.Msg(self._joints[jointIdx], packet)
+		msg.retryOnFailure = True
+		self._msgs.add(msg)
+		
+	def actuate(self, jointIdx, motorValue, motorDuration = 500):
 		if (abs(motorValue) <= self._minMotorValue and abs(self._lastCmdActuate) <= self._minMotorValue):
 			self._lastCmdActuate = motorValue
 			return
@@ -141,7 +162,7 @@ class TR2:
 		x = int(math.floor(motorValue * 100.0))
 			
 		packet = tr2_msgs.Packet()
-		packet.i2cAddress = self._joints[jointIdx]
+		packet.address = self._joints[jointIdx]
 		packet.cmd = CMD_ROTATE
 		packet.addParam(x + offsetBinary)
 		packet.addParam(int(math.floor(motorDuration % 256)))
@@ -152,67 +173,26 @@ class TR2:
 	
 	def resetEncoderPosition(self, jointIdx):
 		packet = tr2_msgs.Packet()
-		packet.i2cAddress = self._joints[jointIdx]
+		packet.address = self._joints[jointIdx]
 		packet.cmd = CMD_RESET_POS
 		
 		msg = tr2_msgs.Msg(self._joints[jointIdx], packet)
 		msg.retryOnFailure = True
 		self._msgs.add(msg)
 		
-	def setModeAll(self, mode):
-		i = 5
-		while i >= 1:#len(self._joints):
+	def setModeAll(self, mode, j = range(len(_joints))):
+		for i in j:
 			self.setMode(i, mode)
 			self.step()
-			time.sleep(0.250)
-			i -= 1
+			time.sleep(0.050)
 		
 	def setMode(self, jointIdx, mode):
 		packet = tr2_msgs.Packet()
-		packet.i2cAddress = self._joints[jointIdx]
+		packet.address = self._joints[jointIdx]
 		packet.cmd = CMD_SET_MODE
 		packet.addParam(mode)
 		
 		msg = tr2_msgs.Msg(self._joints[jointIdx], packet)
-		msg.retryOnFailure = True
-		self._msgs.add(msg)
-		
-	def getStateAll(self, callback = None):
-		if (self._grabbingState == True):
-			return callback(err = True)
-	
-		i = 5
-		self._cbs = 0
-		self._grabbingState = True
-		while i >= 1:#len(self._joints):
-			def cb(pos, err = None, idx = i):
-				if pos != None:
-					self._state[idx] = pos
-					self._stateTS[idx] = time.time()
-				self._cbs += 1
-				if (self._cbs >= 5):
-					self._grabbingState = False
-					callback()
-			self.getState(i, cb)
-			self.step()
-			time.sleep(0.050)
-			i -= 1
-		
-	def getState(self, jointIdx, cb):
-		packet = tr2_msgs.Packet()
-		packet.i2cAddress = self._joints[jointIdx]
-		packet.cmd = CMD_RETURN_STATUS
-		
-		def callback(packet):
-			if packet == None:
-				cb(None, ERR_NO_RESPONSE)
-			elif (packet.cmd == RES_OK_POS):
-				pos = (packet.params[0] + packet.params[1] * 256.0) / 65536.0 * math.pi * 2
-				cb(pos)
-			else:
-				cb(None, ERR_OTHER)
-		
-		msg = tr2_msgs.Msg(self._joints[jointIdx], packet, callback)
 		msg.retryOnFailure = True
 		self._msgs.add(msg)
     

@@ -1,6 +1,9 @@
 #!/usr/bin/env python
 
 import time
+import socket
+import Queue
+import threading
 import rospy
 import sys
 import signal
@@ -12,6 +15,11 @@ import tr2_msgs
 from sensor_msgs.msg import Joy
 from std_msgs.msg import Float64
 
+q = Queue.Queue()
+
+actuatorIds = []
+states = []
+
 RES_OK = 0x20
 RES_ERR = 0x21
 RES_OK_POS = 0x22
@@ -22,13 +30,13 @@ CMD_SET_POS = 0x11
 CMD_RESET_POS = 0x12
 CMD_ROTATE = 0x13
 CMD_RETURN_STATUS = 0x14
-CMD_STOP = 0x15
+CMD_STOP_RELEASE = 0x15
 CMD_STOP_EMERGENCY = 0x16
 
 TAU = math.pi * 2.0
 
 class Packet:
-	i2cAddress = 0x00
+	address = "x0"
 	msgId = 0x00
 	cmd = 0x00
 	length = 0
@@ -37,8 +45,8 @@ class Packet:
 	
 	_startByte = 0xFF
 	
-	def __init__(self, addr = 0x00):
-		self.i2cAddress = addr
+	def __init__(self, addr = "x0"):
+		self.address = addr
 		self.params = []
 		return
 		
@@ -61,9 +69,8 @@ class Packet:
 		
 	def toList(self):
 		self.computeLength()
-		self.computeChecksum()
 		
-		result = [self._startByte, self.i2cAddress, self.msgId, self.length, self.cmd]
+		result = [self._startByte, self.address, self.msgId, self.length, self.cmd]
 		
 		for p in self.params:
 			result.append(p)
@@ -73,31 +80,23 @@ class Packet:
     
 	def toString(self):
 		self.computeLength()
-		self.computeChecksum()
   	
 		msgString = ""
-		msgString = msgString + str(self.i2cAddress) + " "
-		msgString = msgString + str(self.msgId) + " "
-		msgString = msgString + str(self.length) + " "
-		msgString = msgString + str(self.cmd) + " "
+		msgString = msgString + str(self.address) + ":"
+		msgString = msgString + str(self.msgId) + ",0,"
+		msgString = msgString + str(self.length) + ","
+		msgString = msgString + str(self.cmd) + ","
   	
 		for p in self.params:
-			msgString = msgString + str(p) + " "
-			
-		msgString = msgString + str(self.checksum) + " "
-		return msgString + ";"
+			msgString = msgString + str(p) + ","
+
+		return msgString + ";\r\n"
   
 
 class Msgs:
 	_msgs = []
 	_msgId = 0
 	_expirePeriod = 0.250
-	_arduino = serial.Serial('/dev/ttyACM0',
-														baudrate = 115200,
-														bytesize = 8,
-														parity = serial.PARITY_NONE,
-														stopbits = serial.STOPBITS_ONE,
-														timeout = 1)
 	
 	time.sleep(2)
 	
@@ -109,6 +108,10 @@ class Msgs:
 			self._msgId = self._msgId + 1
 		else:
 			self._msgId = 0
+
+	def getState(self):
+		global actuatorIds, states
+		return actuatorIds, states
 		
 	def add(self, msg):
 		self._msgs.append(msg)
@@ -138,66 +141,14 @@ class Msgs:
 					msg._sent = False
 				
 	def step(self):
-		self.listen()
+		global states, actuatorIds
 		
 		for idx, msg in enumerate(self._msgs):
 			if (msg.sent() == False):
 				msg.packet.msgId = self._msgId
 				self.incrementMsgId()
-				msg.send(self._arduino)
-			elif (msg.sent() == True and time.time() > msg.expires and msg._responseReceived == False and msg._attempt < 10 and msg.retryOnFailure == True):
-				msg._sent = False
-				msg.send(self._arduino)
-				
+				msg.send()
 		self.clean()
-				
-	def listen(self):
-		while self._arduino.in_waiting:
-			if (self._arduino.isOpen() == False):
-				self._arduino.open()
-			
-			p_str = self._arduino.read_until(";",256)
-			p = p_str.split(" ")
-			
-			if (p[0] == "READY"):
-				self.retryPending()
-				print "S2I restart. Retrying unconfirmed messages"
-				return
-			elif (p[0] == "INFO:"):
-				print p_str
-				return
-	
-			for idx, val in enumerate(p):
-				try:
-					p[idx] = int(val)
-				except:
-					p[idx] = val
-			
-			packet = Packet()
-			if len(p) >= 3:
-				packet.msgId = p[0]
-				packet.length = p[1]
-				packet.cmd = p[2]
-			
-			i = 0
-			while i < packet.length - 4:
-				if i + 3 <= len(p) - 1:
-					packet.addParam(p[i + 3])
-				i += 1
-			
-			if packet.length - 1 <= len(p) - 1:
-				packet.checksum = p[packet.length - 1]
-			
-			msgFound = False
-			for idx, val in enumerate(self._msgs):
-				if (val.packet.msgId == packet.msgId):
-					msgFound = True
-					packet.i2cAddress = val.packet.i2cAddress
-					print "RES <-", packet.toString()
-					val.callback(packet)
-					
-			if msgFound == False:
-				print "INFO (", len(p_str), "):", p_str
 
 class Msg:
 	packet = Packet()
@@ -227,30 +178,74 @@ class Msg:
 	def sent(self):
 		return self._sent
     
-	def send(self, arduino):
+	def send(self):
 		self._attempt += 1;
 		
 		if (self._sent == True):
 			return
 			
-		if (arduino.isOpen() == False):
-			arduino.open()
-			
-		#packetList = self.packet.toList()
-		#packetList.append("\n")
-		#arduino.write(bytearray(packetList))
-		#time.sleep(0.005)
-			
 		msgString = self.packet.toString().encode()
-		
-		# write char-by-char with delay to give arduino
-		# enough time to read & clear its 64-bit serial buffer
-		for c in msgString:
-			arduino.write(c)
-			time.sleep(0.001)
+		q.put(msgString)
 			
 		self._sent = True
 		self._sentOn = time.time()
 		self.expires = time.time() + self._expirePeriod
-		print "REQ ->", msgString
+		#print "REQ ->", msgString
+
+
+server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server_socket.bind(('', 12345))
+server_socket.listen(5)
+
+def handle_client():
+	global i, states, actuatorIds
+	while True:
+		try:
+			print "Waiting for connection on port 12345"
+			c, addr = server_socket.accept()
+			print 'Got connection from', addr
+			prev_msg = ''
+			while True:
+				try:
+					msg = q.get_nowait()
+					if (msg != prev_msg):
+						c.send(msg)
+						prev_msg = msg
+					else:
+						c.send("nc;")
+				except Queue.Empty:
+					c.send("nc;")
+
+				res = c.recv(1024)
+				if res and res != "ns;":
+					_states = res.split(";")
+					for _state in _states:
+						if (len(_state.split(':')) > 1):
+							id = _state.split(':')[0]
+							state = _state.split(':')[1]
+
+							try:
+								state = int(state)
+							except:
+								pass
+
+							inList = False
+							for j in range(len(actuatorIds)):
+								if id == actuatorIds[j]:
+									states[j] = state
+									inList = True
+
+							if inList == False:
+								actuatorIds.append(id)
+								states.append(state)
+		except BaseException as e:
+			print('{!r}; restarting thread'.format(e))
+		else:
+			print('exited normally, bad thread; restarting')
+
+
+t = threading.Thread(target=handle_client, args=())
+t.daemon = True
+t.start()
 
