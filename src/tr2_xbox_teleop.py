@@ -7,24 +7,26 @@ import signal
 import numpy as np
 import math
 import datetime
-import tr2
-import tr2_utils
-import tr2_tasks
+from tr2py import tr2_utils
+from tr2py.tr2 import TR2
 from sensor_msgs.msg import Joy
 from std_msgs.msg import Float64
 
+tr2 = TR2()
+
 selectedJoint = 0
-joints = [0x70, 0x10, 0x11, 0x12, 0x13, 0x14, 0x30, 0x20, 0x21]
 jointNames = ["Base", "Arm 0", "Arm 1", "Arm 2", "Arm 3", "Arm 4", "Gripper", "Head Pan", "Head Tilt"]
 jointIds = ["b0", "a0", "a1", "a2", "a3", "a4", "g0", "h0", "h1"]
 
 mode = 0
-modes = [0x10, 0x11, 0x12]
+modes = [tr2.mode_servo, tr2.mode_backdrive, tr2.mode_rotate]
 modeNames = ["Servo", "Backdrive", "Rotate"]
 
 close = False
-tr2 = tr2.TR2()
+
 lastJoyUpdate = time.time()
+lastModeChange = time.time()
+lastJointChange = time.time()
 
 joy_data = None
 
@@ -33,8 +35,6 @@ e_stop = False
 
 rpm = 3.75
 recordedState = []
-recordedState = tr2_tasks.pickAndPlaceSingle
-recordedState = tr2_tasks.keurigOperator
 
 def signal_handler(sig, frame):
 	global close
@@ -44,26 +44,27 @@ def signal_handler(sig, frame):
 signal.signal(signal.SIGINT, signal_handler)
 
 def changeJoint():
-	global selectedJoint, mode, lastJointChange;
-	maxJoint = len(joints)
-	if (selectedJoint >= maxJoint - 1):
-		selectedJoint = 0
-	else:
-		selectedJoint += 1
+	global selectedJoint, mode, lastJointChange
+	if time.time() - lastJointChange > 0.150:
+		maxJoint = len(jointIds)
+		if (selectedJoint >= maxJoint - 1):
+			selectedJoint = 0
+		else:
+			selectedJoint += 1
 	
-	name = jointNames[selectedJoint]
-	rospy.loginfo("Joint changed to " + name)
-	changeJointTS = datetime.datetime.now()
-	
-	mode = -1
-	lastJointChange = time.time()
+		name = jointNames[selectedJoint]
+		rospy.loginfo("Joint changed to " + name)
+		mode = -1
+		lastJointChange = time.time()
 	
 def changeMode(m):
-	global selectedJoint, mode;
-	mode = m
-	tr2.setMode(selectedJoint, modes[m])
-	rospy.loginfo("Mode changed to " + modeNames[mode])
-	lastModeChange = time.time()
+	global selectedJoint, mode, lastModeChange
+	if time.time() - lastModeChange > 0.150:
+		mode = m
+		id = jointIds[selectedJoint]
+		tr2.getJoint(id).setMode(modes[mode])
+		rospy.loginfo("Mode changed to " + modeNames[mode])
+		lastModeChange = time.time()
 	
 def subscriber_callback(data):
 	global joy_data, e_stop
@@ -72,10 +73,8 @@ def subscriber_callback(data):
 	# XBOX-Button: emergency stop
 	if (data.buttons[8] == 1):
 		e_stop = True
-		tr2.stopAll()
-		time.sleep(1.000)
-		tr2.setModeAll(modes[2]) # rotate
-		time.sleep(0.300)
+		tr2.stop()
+		tr2.setMode(tr2.mode_rotate)
 		
 def teleop():
 	global mode, joy_data, e_stop
@@ -89,25 +88,23 @@ def teleop():
 	if (data.buttons[1] == 1):
 		print "Releasing actuators!"
 		e_stop = False
-		tr2.releaseAll();
+		tr2.release();
 	# XBOX-Button: emergency stop
 	if (data.buttons[8] == 1):
 		print "Executing emergency stop!"
 		e_stop = True
-		tr2.stopAll()
-		time.sleep(1.000)
-		tr2.setModeAll(modes[2]) # rotate
-		time.sleep(0.300)
+		tr2.stop()
+		tr2.setMode(tr2.mode_rotate)
 	
 	# Left trigger: set all joints backdrive
 	if (data.axes[5] < 0):
 		print "Setting all joints to backdrive mode"
-		tr2.setModeAll(modes[1], (1,2,3,4,5))
+		tr2.setMode(tr2.mode_backdrive)
 
 	# Right trigger: set all joints servo
 	if (data.axes[4] < 0):
 		print "Setting all joints to servo mode"
-		tr2.setModeAll(modes[0], (1,2,3,4,5))
+		tr2.setMode(tr2.mode_servo)
 
 	# Select/Back: change joint
 	if (data.buttons[6] == 1):
@@ -116,7 +113,7 @@ def teleop():
 	# Start button: Reset actuator torque and position offsets
 	if (data.buttons[7] == 1):
 		print("Resetting encoder positions")
-		tr2.resetEncoderPosition(selectedJoint)
+		tr2.getJoint(jointIds[selectedJoint]).resetEncoderPosition()
 	
 	# A button: playback position waypoints
 	if (data.buttons[0] == 1):
@@ -133,9 +130,9 @@ def teleop():
 	# Both joysticks clicked in: Go joint home
 	if (data.buttons[9] == 1 and data.buttons[10] == 1):
 		print("Sending home")
-		if (mode != 0): # mode servo
-			changeMode(0)
-		tr2.setPosition(selectedJoint, 0)
+		j = tr2.getJoint(jointIds[selectedJoint])
+		j.setMode(tr2.mode_servo)
+		j.setPosition(0)
 	
 	# LB/RB buttons: change mode
 	if (data.buttons[4] == 1): 
@@ -149,7 +146,7 @@ def teleop():
 		else:
 			changeMode(0)
 
-	if (joints[selectedJoint] == 0x70): # base
+	if (jointIds[selectedJoint] == "b0"): # base
 		y = data.axes[1]
 		rotation = data.axes[2]
 		if (abs(data.axes[0]) > abs(rotation)):
@@ -162,20 +159,20 @@ def teleop():
 				return
 			pos = data.axes[0] * math.pi
 
-			if (joints[selectedJoint] == 0x30): # base
+			if (jointIds[selectedJoint] == "g0"):
 				if pos > 0:
 					pos = 1
 				elif pos < 0:
 					pos = 0
-				tr2.setPosition(selectedJoint, pos)
+				tr2.getJoint(jointIds[selectedJoint]).setPosition(pos)
 			else:
 				if (pos < 0):
 					pos = pos + (math.pi * 2.0)
-			tr2.setPosition(selectedJoint, pos)
+			tr2.getJoint(jointIds[selectedJoint]).setPosition(pos)
 		elif (mode == 1): # Backdrive Mode
 			return
 		elif (mode == 2): # Rotate Mode
-			tr2.actuate(selectedJoint, data.axes[0])
+			tr2.getJoint(jointIds[selectedJoint]).actuate(data.axes[0])
 
 # returns current pos in waypoint format
 # ex: [[('a0', 3.14), ('a1', 1.25)]]
@@ -226,8 +223,7 @@ def playback_waypoints():
 	print "Playing back recorded waypoints (" + str(len(waypoints)) + ")"
 	
 	print "Setting actuators to servo mode"
-	tr2.setModeAll(modes[0])
-	time.sleep(0.300)
+	tr2.setMode(tr2.servo_mode)
 
 	w_num = -1
 	for w in waypoints:
@@ -350,15 +346,12 @@ def program():
 	print("Waypoints set from file (" + str(len(waypoints))) + ")"
 	f.close()
 
-	tr2.setModeAll(modes[2]) # rotate
-	time.sleep(0.300)
-	tr2.releaseAll()
-	time.sleep(0.300)
+	tr2.setMode(tr2.mode_rotate)
+	tr2.release()
 
 	while close != True:
 		teleop()
-		tr2.step()
-		time.sleep(0.150)
+		time.sleep(0.050)
 
 if __name__ == '__main__':
 	program()
