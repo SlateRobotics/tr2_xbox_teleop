@@ -9,6 +9,7 @@ import math
 import datetime
 from tr2py import tr2_utils
 from tr2py.tr2 import TR2
+from tr2py.tr2_node import TR2_Node
 from sensor_msgs.msg import Joy
 from std_msgs.msg import Float64
 
@@ -77,7 +78,7 @@ def subscriber_callback(data):
 		tr2.setMode(tr2.mode_rotate)
 		
 def teleop():
-	global mode, joy_data, e_stop
+	global tr2, mode, joy_data, e_stop
 	
 	if (joy_data == None):
 		return
@@ -337,9 +338,11 @@ def playback_waypoints():
 	print "Waypoint playback complete"
 
 def program():
-	global close, waypoints
+	global tr2, close, waypoints
 	rospy.init_node('tr2_xbox_teleop', anonymous=True)
 	rospy.Subscriber("joy", Joy, subscriber_callback)
+	
+	tr2_node = TR2_Node(tr2, init_node = False)
 
 	f = open("/home/nvidia/ros_ws/src/tr2_xbox_teleop/config/_waypoints.txt", "r+")
 	waypoints = eval(f.read())
@@ -351,6 +354,7 @@ def program():
 
 	while close != True:
 		teleop()
+		tr2_node.step()
 		time.sleep(0.050)
 
 if __name__ == '__main__':
